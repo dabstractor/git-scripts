@@ -22,13 +22,13 @@ if [[ $commit_count -gt 1 ]]; then
     system_prompt="You are a commit message generator. Match this exact style:
 $examples
 
-Output ONLY the commit message. Do not duplicate any of the example messages exactly. Do not introduce any new structured formatting you do not see in the examples. No explanations."
+Target exactly 50 characters (~7 words). Do not exceed by more than 2 characters. Output ONLY the commit message. Do not duplicate any of the example messages exactly. Do not introduce any new structured formatting you do not see in the examples. No explanations."
     prompt="Generate a commit message for these changes:"
     if [[ "$VERBOSE" == "1" ]]; then echo "DEBUG: Using style-matching mode"; fi
 else
     # New project - provide standard style guidance
     if [[ "$VERBOSE" == "1" ]]; then echo "DEBUG: Using new project mode"; fi
-    system_prompt="You are a commit message generator. Output ONLY the commit message. Use conventional commit format: type(scope): description"
+    system_prompt="You are a commit message generator. Output ONLY the commit message. Target 50 characters (~7 words). Suggest conventional commit format: type(scope): description"
     prompt="Generate a commit message for these changes:"
 fi
 if [[ "$VERBOSE" == "1" ]]; then
