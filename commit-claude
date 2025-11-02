@@ -1,0 +1,39 @@
+#!/bin/zsh
+
+# Get staged changes
+diff=$(git diff --cached)
+if [[ -z "$diff" ]]; then
+    echo "No staged changes found. Use git add to stage changes first."
+    exit 1
+fi
+
+# Count total commits in the project
+commit_count=$(git rev-list --count HEAD 2>/dev/null || echo "0")
+
+# Build prompt based on commit history
+if [[ $commit_count -gt 1 ]]; then
+    # Project has established commit history - just match existing style
+    examples=$(git log --oneline -20)
+    prompt="Only output commit message. Examples:
+$examples
+
+Changes:"
+else
+    # New project - provide standard style guidance
+    prompt="Only output commit message. Format: type(scope): description
+
+Changes:"
+fi
+
+# Generate commit message using Claude
+# Use ANTHROPIC_DEFAULT_HAIKU_MODEL if set, otherwise haiku
+model="${ANTHROPIC_DEFAULT_HAIKU_MODEL:-haiku}"
+commit_msg=$(printf '%s\n\n%s' "$diff" "$prompt" | claude --model "$model" --system-prompt "You are a commit message generator. Output ONLY the commit message. No explanations, no commentary, no conversational text. Just the commit message." -p)
+
+# Create the commit if we got a valid message
+if [[ -n "$commit_msg" ]]; then
+    git commit -m "$commit_msg"
+else
+    echo "Failed to generate commit message"
+    exit 1
+fi
