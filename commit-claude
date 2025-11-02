@@ -11,24 +11,58 @@ fi
 commit_count=$(git rev-list --count HEAD 2>/dev/null || echo "0")
 
 # Build prompt based on commit history
+if [[ "$VERBOSE" == "1" ]]; then echo "DEBUG: commit_count=$commit_count"; fi
 if [[ $commit_count -gt 1 ]]; then
     # Project has established commit history - just match existing style
-    examples=$(git log --oneline -20)
-    prompt="Only output commit message. Examples:
+    examples=$(git log --oneline -20 | cut -d' ' -f2-)
+    if [[ "$VERBOSE" == "1" ]]; then
+        echo "DEBUG: examples being used:"
+        echo "$examples"
+    fi
+    system_prompt="You are a commit message generator. Match this exact style:
 $examples
 
-Changes:"
+Output ONLY the commit message. Do not duplicate any of the example messages exactly. Do not introduce any new structured formatting you do not see in the examples. No explanations."
+    prompt="Generate a commit message for these changes:"
+    if [[ "$VERBOSE" == "1" ]]; then echo "DEBUG: Using style-matching mode"; fi
 else
     # New project - provide standard style guidance
-    prompt="Only output commit message. Format: type(scope): description
-
-Changes:"
+    if [[ "$VERBOSE" == "1" ]]; then echo "DEBUG: Using new project mode"; fi
+    system_prompt="You are a commit message generator. Output ONLY the commit message. Use conventional commit format: type(scope): description"
+    prompt="Generate a commit message for these changes:"
+fi
+if [[ "$VERBOSE" == "1" ]]; then
+    echo "DEBUG: system_prompt=$system_prompt"
+    echo "DEBUG: prompt=$prompt"
 fi
 
 # Generate commit message using Claude
+# Use CLAUDE_COMMAND if set, otherwise claude
+if [[ -n "$CLAUDE_COMMAND" ]]; then
+    # Split the command into array properly handling quoted arguments
+    eval "claude_cmd=($CLAUDE_COMMAND)"
+else
+    claude_cmd=(claude)
+fi
 # Use ANTHROPIC_DEFAULT_HAIKU_MODEL if set, otherwise haiku
 model="${ANTHROPIC_DEFAULT_HAIKU_MODEL:-haiku}"
-commit_msg=$(printf '%s\n\n%s' "$diff" "$prompt" | claude --model "$model" --system-prompt "You are a commit message generator. Output ONLY the commit message. No explanations, no commentary, no conversational text. Just the commit message." -p)
+if [[ "$VERBOSE" == "1" ]]; then
+    echo "DEBUG: model=$model"
+    echo "DEBUG: claude_cmd=${claude_cmd[@]}"
+fi
+commit_msg=$(printf '%s\n\n%s' "$diff" "$prompt" | "${claude_cmd[@]}" --model "$model" --system-prompt "$system_prompt" -p)
+if [[ "$VERBOSE" == "1" ]]; then echo "DEBUG: claude returned: $commit_msg"; fi
+
+# Check if commit message already exists in history
+recent_messages=$(git log --oneline -10 | cut -d' ' -f2-)
+if echo "$recent_messages" | grep -q "^$commit_msg$"; then
+    echo "Error: Generated commit message already exists in history: '$commit_msg'"
+    if [[ "$VERBOSE" == "1" ]]; then
+        echo "DEBUG: Recent messages were:"
+        echo "$recent_messages"
+    fi
+    exit 1
+fi
 
 # Create the commit if we got a valid message
 if [[ -n "$commit_msg" ]]; then

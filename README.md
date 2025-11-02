@@ -19,11 +19,20 @@ git commit-claude
 
 You'll need the `claude` CLI tool installed for this to work.
 
-If you want to use a different model than the default, you can set an environment variable:
+If you want to use a different model than the default, you can configure it in your Claude CLI settings.
+
+You can also customize the command used to invoke Claude by setting the `CLAUDE_COMMAND` environment variable:
 
 ```bash
-# Example alias for your .gitconfig if you want a different model
-commit-claude = "!CLAUDE_MODEL=sonnet ~/path/to/your/git-scripts/commit-claude"
+# Example alias for your .gitconfig using a different command
+commit-claude = "!CLAUDE_COMMAND=ccr code ~/path/to/your/git-scripts/commit-claude"
+```
+
+For example, to use Claude Code Router with an OpenRouter free model:
+
+```bash
+# Example using Claude Code Router with OpenRouter's GLM-4.5-Air free model
+commit-claude = "!CLAUDE_COMMAND=\"ccr code\" ANTHROPIC_DEFAULT_HAIKU_MODEL=openrouter,z-ai/glm-4.5-air:free ~/path/to/your/git-scripts/commit-claude"
 ```
 
 ## newwt
