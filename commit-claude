@@ -50,7 +50,7 @@ if [[ "$VERBOSE" == "1" ]]; then
     echo "DEBUG: model=$model"
     echo "DEBUG: claude_cmd=${claude_cmd[@]}"
 fi
-commit_msg=$(printf '%s\n\n%s' "$diff" "$prompt" | "${claude_cmd[@]}" --model "$model" --system-prompt "$system_prompt" -p)
+commit_msg=$(printf '%s\n\n%s' "$diff" "$prompt" | "${claude_cmd[@]}" --model "$model" --system-prompt "$system_prompt" -p | xargs)
 if [[ "$VERBOSE" == "1" ]]; then echo "DEBUG: claude returned: $commit_msg"; fi
 
 # Check if commit message already exists in history
