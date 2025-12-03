@@ -1,73 +1,141 @@
 #!/bin/zsh
 
-# Get staged changes
-diff=$(git diff --cached)
-if [[ -z "$diff" ]]; then
-    echo "No staged changes found. Use git add to stage changes first."
+# -------------------------------------------------------------------------
+# ERROR HANDLER (RESCUE PROTOCOL)
+# -------------------------------------------------------------------------
+handle_error() {
+    if [[ -n "$TREE_SHA" && -z "$NEW_COMMIT_SHA" ]]; then
+        echo ""
+        echo "❌ Commit generation failed."
+        echo "------------------------------------------------------------"
+        echo "Your files were safely snapshotted before generation."
+        echo "Tree ID: $TREE_SHA"
+        echo ""
+        echo "To commit the originally staged files manually, run:"
+        if [[ -n "$PARENT_SHA" ]]; then
+            echo "  git commit-tree -p $PARENT_SHA -m \"Your manual message\" $TREE_SHA | xargs git update-ref HEAD"
+        else
+            echo "  git commit-tree -m \"Your manual message\" $TREE_SHA | xargs git update-ref HEAD"
+        fi
+        echo "------------------------------------------------------------"
+    fi
+    exit 1
+}
+
+trap 'handle_error' INT TERM
+
+# -------------------------------------------------------------------------
+# 1. IMMEDIATE SNAPSHOT (PLUMBING)
+# -------------------------------------------------------------------------
+TREE_SHA=$(git write-tree)
+if [[ $? -ne 0 ]]; then
+    echo "Failed to write tree. Make sure you have staged changes."
     exit 1
 fi
 
-# Count total commits in the project
+PARENT_SHA=$(git rev-parse HEAD 2>/dev/null)
+
+diff=$(git diff --cached)
+if [[ -z "$diff" ]]; then
+    echo "No staged changes found."
+    exit 1
+fi
+
+# -------------------------------------------------------------------------
+# 2. PREPARE PROMPT & JSON INSTRUCTIONS
+# -------------------------------------------------------------------------
 commit_count=$(git rev-list --count HEAD 2>/dev/null || echo "0")
 
-# Build prompt based on commit history
-if [[ "$VERBOSE" == "1" ]]; then echo "DEBUG: commit_count=$commit_count"; fi
+# Strict instruction: No internal double quotes to allow safe regex parsing
+json_instruction="Return valid JSON only. No markdown, no XML.
+Format: {\"commit_message\": \"<message>\"}
+IMPORTANT: Do NOT use double quotes (\") inside the message text. Use single quotes instead if needed."
+
 if [[ $commit_count -gt 1 ]]; then
-    # Project has established commit history - just match existing style
     examples=$(git log --oneline -20 | cut -d' ' -f2-)
-    if [[ "$VERBOSE" == "1" ]]; then
-        echo "DEBUG: examples being used:"
-        echo "$examples"
-    fi
-    system_prompt="You are a commit message generator. Match this exact style:
+    system_prompt="You are a commit message generator.
+$json_instruction
+
+Match this exact style for the message content:
 $examples
 
-Target exactly 50 characters (~7 words). Do not exceed by more than 2 characters. Output ONLY the commit message. Do not duplicate any of the example messages exactly. Do not introduce any new structured formatting you do not see in the examples. No explanations."
-    prompt="Generate a commit message for these changes:"
-    if [[ "$VERBOSE" == "1" ]]; then echo "DEBUG: Using style-matching mode"; fi
+Target exactly 50 characters (~7 words). Do not exceed by more than 2 characters."
 else
-    # New project - provide standard style guidance
-    if [[ "$VERBOSE" == "1" ]]; then echo "DEBUG: Using new project mode"; fi
-    system_prompt="You are a commit message generator. Output ONLY the commit message. Target 50 characters (~7 words). Suggest conventional commit format: type(scope): description"
-    prompt="Generate a commit message for these changes:"
-fi
-if [[ "$VERBOSE" == "1" ]]; then
-    echo "DEBUG: system_prompt=$system_prompt"
-    echo "DEBUG: prompt=$prompt"
+    system_prompt="You are a commit message generator.
+$json_instruction
+
+Target 50 characters (~7 words). Format: type(scope): description"
 fi
 
-# Generate commit message using Claude
-# Use CLAUDE_COMMAND if set, otherwise claude
+prompt="Generate a commit message for these changes:"
+
+# -------------------------------------------------------------------------
+# 3. ASYNC GENERATION LOOP (WITH RETRY)
+# -------------------------------------------------------------------------
 if [[ -n "$CLAUDE_COMMAND" ]]; then
-    # Split the command into array properly handling quoted arguments
     eval "claude_cmd=($CLAUDE_COMMAND)"
 else
     claude_cmd=(claude)
 fi
-# Use ANTHROPIC_DEFAULT_HAIKU_MODEL if set, otherwise haiku
 model="${ANTHROPIC_DEFAULT_HAIKU_MODEL:-haiku}"
-if [[ "$VERBOSE" == "1" ]]; then
-    echo "DEBUG: model=$model"
-    echo "DEBUG: claude_cmd=${claude_cmd[@]}"
-fi
-commit_msg=$(printf '%s\n\n%s' "$diff" "$prompt" | "${claude_cmd[@]}" --model "$model" --system-prompt "$system_prompt" -p | xargs)
-if [[ "$VERBOSE" == "1" ]]; then echo "DEBUG: claude returned: $commit_msg"; fi
 
-# Check if commit message already exists in history
-recent_messages=$(git log --oneline -10 | cut -d' ' -f2-)
+attempt=1
+max_attempts=2
+commit_msg=""
+
+while [ $attempt -le $max_attempts ]; do
+    if [[ "$VERBOSE" == "1" ]]; then echo "DEBUG: Attempt $attempt of $max_attempts"; fi
+    
+    # Run the API call
+    response=$(printf '%s\n\n%s' "$diff" "$prompt" | "${claude_cmd[@]}" --model "$model" --system-prompt "$system_prompt" -p)
+    
+    if [[ "$VERBOSE" == "1" ]]; then echo "DEBUG: Raw Response: $response"; fi
+
+    # PARSE JSON USING SED
+    # 1. tr -d '\n'     -> Remove newlines to handle multi-line JSON output
+    # 2. sed command    -> Capture text between "commit_message": " AND "
+    commit_msg=$(echo "$response" | tr -d '\n' | sed -n 's/.*"commit_message"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+
+    # Trim whitespace (standard awk fallback for xargs behavior)
+    commit_msg=$(echo "$commit_msg" | awk '{$1=$1};1')
+
+    if [[ -n "$commit_msg" ]]; then
+        break
+    else
+        echo "⚠️  Received invalid JSON format. Retrying..."
+        prompt="The previous response was not valid JSON. Please output STRICT valid JSON only: {\"commit_message\": \"message_here\"}"
+        ((attempt++))
+    fi
+done
+
+# -------------------------------------------------------------------------
+# 4. VALIDATION & FINALIZATION
+# -------------------------------------------------------------------------
+
+if [[ -z "$commit_msg" ]]; then
+    echo "Error: Failed to extract commit message after $max_attempts attempts."
+    handle_error
+fi
+
+recent_messages=$(git log --oneline -10 2>/dev/null | cut -d' ' -f2-)
 if echo "$recent_messages" | grep -q "^$commit_msg$"; then
     echo "Error: Generated commit message already exists in history: '$commit_msg'"
-    if [[ "$VERBOSE" == "1" ]]; then
-        echo "DEBUG: Recent messages were:"
-        echo "$recent_messages"
-    fi
-    exit 1
+    handle_error
 fi
 
-# Create the commit if we got a valid message
-if [[ -n "$commit_msg" ]]; then
-    git commit -m "$commit_msg"
+if [[ -n "$PARENT_SHA" ]]; then
+    NEW_COMMIT_SHA=$(git commit-tree -p "$PARENT_SHA" -m "$commit_msg" "$TREE_SHA")
+    
+    if ! git update-ref HEAD "$NEW_COMMIT_SHA" "$PARENT_SHA"; then
+        echo "Error: Could not update HEAD. The branch moved while we were generating."
+        exit 1
+    fi
 else
-    echo "Failed to generate commit message"
-    exit 1
+    NEW_COMMIT_SHA=$(git commit-tree -m "$commit_msg" "$TREE_SHA")
+    git update-ref HEAD "$NEW_COMMIT_SHA"
 fi
+
+echo "[$NEW_COMMIT_SHA] $commit_msg"
+git --no-pager diff-tree --no-commit-id --name-status -r "$NEW_COMMIT_SHA"
+
+trap - INT TERM
