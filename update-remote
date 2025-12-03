@@ -1,0 +1,2 @@
+git remote remove $1
+git remote add $1 $2
