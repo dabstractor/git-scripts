@@ -49,17 +49,28 @@ commit_count=$(git rev-list --count HEAD 2>/dev/null || echo "0")
 # Strict instruction: No internal double quotes to allow safe regex parsing
 json_instruction="Return valid JSON only. No markdown, no XML.
 Format: {\"commit_message\": \"<message>\"}
+For multiline messages, use literal \\n for newlines (e.g., \"subject\\n\\nbody\").
 IMPORTANT: Do NOT use double quotes (\") inside the message text. Use single quotes instead if needed."
 
 if [[ $commit_count -gt 1 ]]; then
-    examples=$(git log --oneline -20 | cut -d' ' -f2-)
+    # Fetch full commit messages with separator
+    examples=$(git log --format="---%n%B" -20 | sed '/^$/d' | head -100)
+    has_multiline=$(echo "$examples" | awk '/^---$/{if(lines>1)found=1; lines=0; next} {lines++} END{print found+0}')
+
+    multiline_rule="Only output a single-line subject (no body)."
+    if [[ "$has_multiline" == "1" ]]; then
+        multiline_rule="Only add a body (blank line + description) if the history shows multiline commits AND these changes truly warrant detailed explanation. Otherwise, use a single-line subject only."
+    fi
+
     system_prompt="You are a commit message generator.
 $json_instruction
 
-Match this exact style for the message content:
+Match the exact style of these recent commits:
 $examples
 
-Target exactly 50 characters (~7 words). Do not exceed by more than 2 characters."
+NEVER use the exact same message as any example above. Create an original message that matches their style.
+$multiline_rule
+Target ~50 characters for the subject line."
 else
     system_prompt="You are a commit message generator.
 $json_instruction
@@ -94,10 +105,12 @@ while [ $attempt -le $max_attempts ]; do
     # PARSE JSON USING SED
     # 1. tr -d '\n'     -> Remove newlines to handle multi-line JSON output
     # 2. sed command    -> Capture text between "commit_message": " AND "
+    # 3. Convert \n escape sequences to actual newlines
     commit_msg=$(echo "$response" | tr -d '\n' | sed -n 's/.*"commit_message"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+    commit_msg=$(printf '%b' "$commit_msg")
 
-    # Trim whitespace (standard awk fallback for xargs behavior)
-    commit_msg=$(echo "$commit_msg" | awk '{$1=$1};1')
+    # Trim leading/trailing whitespace from overall message
+    commit_msg=$(echo "$commit_msg" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
 
     if [[ -n "$commit_msg" ]]; then
         break
@@ -117,9 +130,11 @@ if [[ -z "$commit_msg" ]]; then
     handle_error
 fi
 
-recent_messages=$(git log --oneline -10 2>/dev/null | cut -d' ' -f2-)
-if echo "$recent_messages" | grep -q "^$commit_msg$"; then
-    echo "Error: Generated commit message already exists in history: '$commit_msg'"
+# Check subject line (first line) against recent commit subjects
+commit_subject=$(echo "$commit_msg" | head -1)
+recent_subjects=$(git log --format="%s" -20 2>/dev/null)
+if echo "$recent_subjects" | grep -Fxq "$commit_subject"; then
+    echo "Error: Generated subject line already exists in history: '$commit_subject'"
     handle_error
 fi
 
@@ -135,7 +150,7 @@ else
     git update-ref HEAD "$NEW_COMMIT_SHA"
 fi
 
-echo "[$NEW_COMMIT_SHA] $commit_msg"
+echo "[$NEW_COMMIT_SHA] $commit_subject"
 git --no-pager diff-tree --no-commit-id --name-status -r "$NEW_COMMIT_SHA"
 
 trap - INT TERM
