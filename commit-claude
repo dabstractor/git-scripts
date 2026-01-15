@@ -65,6 +65,8 @@ if [[ $commit_count -gt 1 ]]; then
     system_prompt="You are a commit message generator.
 $json_instruction
 
+Focus on the ESSENCE of the change (the intent/purpose), not specific implementation details like filenames or function names.
+
 Match the exact style of these recent commits:
 $examples
 
@@ -74,6 +76,8 @@ Target ~50 characters for the subject line."
 else
     system_prompt="You are a commit message generator.
 $json_instruction
+
+Focus on the ESSENCE of the change (the intent/purpose), not specific implementation details like filenames or function names.
 
 Target 50 characters (~7 words). Format: type(scope): description"
 fi
