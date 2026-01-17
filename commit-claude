@@ -35,7 +35,10 @@ fi
 
 PARENT_SHA=$(git rev-parse HEAD 2>/dev/null)
 
-diff=$(git diff --cached)
+diff=$(git diff --cached \
+  -- ':!*.lock' ':!package-lock.json' ':!pnpm-lock.yaml' \
+     ':!*.snap' ':!*.map' ':!vendor/*' \
+  | head -c 300000)
 if [[ -z "$diff" ]]; then
     echo "No staged changes found."
     exit 1
