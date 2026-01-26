@@ -25,16 +25,8 @@ handle_error() {
 trap 'handle_error' INT TERM
 
 # -------------------------------------------------------------------------
-# 1. IMMEDIATE SNAPSHOT (PLUMBING)
+# 1. CHECK FOR STAGED CHANGES
 # -------------------------------------------------------------------------
-TREE_SHA=$(git write-tree)
-if [[ $? -ne 0 ]]; then
-    echo "Failed to write tree. Make sure you have staged changes."
-    exit 1
-fi
-
-PARENT_SHA=$(git rev-parse HEAD 2>/dev/null)
-
 diff=$(git diff --cached \
   -- ':!*.lock' ':!package-lock.json' ':!pnpm-lock.yaml' \
      ':!*.snap' ':!*.map' ':!vendor/*' \
@@ -45,7 +37,18 @@ if [[ -z "$diff" ]]; then
 fi
 
 # -------------------------------------------------------------------------
-# 2. PREPARE PROMPT & JSON INSTRUCTIONS
+# 2. IMMEDIATE SNAPSHOT (PLUMBING)
+# -------------------------------------------------------------------------
+TREE_SHA=$(git write-tree)
+if [[ $? -ne 0 ]]; then
+    echo "Failed to write tree. Make sure you have staged changes."
+    exit 1
+fi
+
+PARENT_SHA=$(git rev-parse HEAD 2>/dev/null)
+
+# -------------------------------------------------------------------------
+# 3. PREPARE PROMPT & JSON INSTRUCTIONS
 # -------------------------------------------------------------------------
 commit_count=$(git rev-list --count HEAD 2>/dev/null || echo "0")
 
@@ -88,7 +91,7 @@ fi
 prompt="Generate a commit message for these changes:"
 
 # -------------------------------------------------------------------------
-# 3. ASYNC GENERATION LOOP (WITH RETRY)
+# 4. ASYNC GENERATION LOOP (WITH RETRY)
 # -------------------------------------------------------------------------
 if [[ -n "$CLAUDE_COMMAND" ]]; then
     eval "claude_cmd=($CLAUDE_COMMAND)"
@@ -129,7 +132,7 @@ while [ $attempt -le $max_attempts ]; do
 done
 
 # -------------------------------------------------------------------------
-# 4. VALIDATION & FINALIZATION
+# 5. VALIDATION & FINALIZATION
 # -------------------------------------------------------------------------
 
 if [[ -z "$commit_msg" ]]; then
