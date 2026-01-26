@@ -94,11 +94,7 @@ prompt="Generate a commit message for these changes:"
 # -------------------------------------------------------------------------
 # 4. ASYNC GENERATION LOOP (WITH RETRY)
 # -------------------------------------------------------------------------
-if [[ -n "$CLAUDE_COMMAND" ]]; then
-    eval "claude_cmd=($CLAUDE_COMMAND)"
-else
-    claude_cmd=(claude)
-fi
+# Force bare claude command - ignore CLAUDE_COMMAND to avoid user flags
 model="${ANTHROPIC_DEFAULT_HAIKU_MODEL:-haiku}"
 
 attempt=1
@@ -107,9 +103,19 @@ commit_msg=""
 
 while [ $attempt -le $max_attempts ]; do
     if [[ "$VERBOSE" == "1" ]]; then echo "DEBUG: Attempt $attempt of $max_attempts"; fi
-    
-    # Run the API call
-    response=$(printf '%s\n\n%s' "$diff" "$prompt" | "${claude_cmd[@]}" --model "$model" --system-prompt "$system_prompt" -p)
+
+    # Run the API call - BARE MINIMUM: no tools, no skills, no plugins, no chrome,
+    # no session persistence, NO USER SETTINGS, no project settings, no local settings
+    response=$(printf '%s\n\n%s' "$diff" "$prompt" \
+      | claude \
+      --model "$model" \
+      --system-prompt "$system_prompt" \
+      --setting-sources "" \
+      --tools "" \
+      --disable-slash-commands \
+      --no-chrome \
+      --no-session-persistence \
+      -p)
     
     if [[ "$VERBOSE" == "1" ]]; then echo "DEBUG: Raw Response: $response"; fi
 
