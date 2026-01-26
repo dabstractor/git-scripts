@@ -36,6 +36,9 @@ if [[ -z "$diff" ]]; then
     exit 1
 fi
 
+# Capture parent BEFORE write-tree to ensure consistency
+PARENT_SHA=$(git rev-parse HEAD 2>/dev/null)
+
 # -------------------------------------------------------------------------
 # 2. IMMEDIATE SNAPSHOT (PLUMBING)
 # -------------------------------------------------------------------------
@@ -44,8 +47,6 @@ if [[ $? -ne 0 ]]; then
     echo "Failed to write tree. Make sure you have staged changes."
     exit 1
 fi
-
-PARENT_SHA=$(git rev-parse HEAD 2>/dev/null)
 
 # -------------------------------------------------------------------------
 # 3. PREPARE PROMPT & JSON INSTRUCTIONS
