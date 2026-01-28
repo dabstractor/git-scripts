@@ -27,10 +27,21 @@ trap 'handle_error' INT TERM
 # -------------------------------------------------------------------------
 # 1. CHECK FOR STAGED CHANGES
 # -------------------------------------------------------------------------
-diff=$(git diff --cached \
+# Get markdown diffs (100 lines per file max)
+md_files=(${(f)"$(git diff --cached --name-only -- '*.md' '*.markdown' 2>/dev/null)"})
+markdown_diff=""
+for file in $md_files; do
+    markdown_diff+="$(git diff --cached -- "$file" | head -n 100)"$'\n'
+done
+
+# Get non-markdown diffs (excluding lock files, etc.)
+other_diff=$(git diff --cached \
   -- ':!*.lock' ':!package-lock.json' ':!pnpm-lock.yaml' \
      ':!*.snap' ':!*.map' ':!vendor/*' \
+     ':!*.md' ':!*.markdown' \
   | head -c 300000)
+
+diff="$markdown_diff$other_diff"
 if [[ -z "$diff" ]]; then
     echo "No staged changes found."
     exit 1
@@ -74,10 +85,10 @@ $json_instruction
 
 Focus on the ESSENCE of the change (the intent/purpose), not specific implementation details like filenames or function names.
 
-Match the exact style of these recent commits:
+Match the tone and style of these recent commits:
 $examples
 
-NEVER use the exact same message as any example above. Create an original message that matches their style.
+CRITICAL: You MUST NOT copy or reuse ANY phrasing from the examples above. The examples show the STYLE to match - the format, tone, and conventions. But producing the same text you have seen is STRICTLY FORBIDDEN. Your output must be completely original wording that describes THIS specific change. Reusing example text is a critical failure.
 $multiline_rule
 Target ~50 characters for the subject line."
 else
@@ -92,66 +103,94 @@ fi
 prompt="Generate a commit message for these changes:"
 
 # -------------------------------------------------------------------------
-# 4. ASYNC GENERATION LOOP (WITH RETRY)
+# 4. GENERATION LOOP (WITH RETRY FOR DUPLICATES)
 # -------------------------------------------------------------------------
 # Force bare claude command - ignore CLAUDE_COMMAND to avoid user flags
 model="${ANTHROPIC_DEFAULT_HAIKU_MODEL:-haiku}"
 
-attempt=1
-max_attempts=2
+max_duplicate_retries=3
+duplicate_retry=0
 commit_msg=""
+rejected_messages=()
 
-while [ $attempt -le $max_attempts ]; do
-    if [[ "$VERBOSE" == "1" ]]; then echo "DEBUG: Attempt $attempt of $max_attempts"; fi
+while [ $duplicate_retry -lt $max_duplicate_retries ]; do
+    attempt=1
+    max_attempts=2
+    user_prompt="$prompt"
 
-    # Run the API call - BARE MINIMUM: no tools, no skills, no plugins, no chrome,
-    # no session persistence, NO USER SETTINGS, no project settings, no local settings
-    response=$(printf '%s\n\n%s' "$diff" "$prompt" \
-      | claude \
-      --model "$model" \
-      --system-prompt "$system_prompt" \
-      --setting-sources "" \
-      --tools "" \
-      --disable-slash-commands \
-      --no-chrome \
-      --no-session-persistence \
-      -p)
-    
-    if [[ "$VERBOSE" == "1" ]]; then echo "DEBUG: Raw Response: $response"; fi
+    # If retrying due to duplicate, add explicit rejection info
+    if [[ ${#rejected_messages[@]} -gt 0 ]]; then
+        rejected_list=$(printf '- %s\n' "${rejected_messages[@]}")
+        user_prompt="Generate a commit message for these changes.
 
-    # PARSE JSON USING SED
-    # 1. tr -d '\n'     -> Remove newlines to handle multi-line JSON output
-    # 2. sed command    -> Capture text between "commit_message": " AND "
-    # 3. Convert \n escape sequences to actual newlines
-    commit_msg=$(echo "$response" | tr -d '\n' | sed -n 's/.*"commit_message"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
-    commit_msg=$(printf '%b' "$commit_msg")
+IMPORTANT: The following messages were REJECTED because they already exist in git history. You MUST generate something COMPLETELY DIFFERENT:
+$rejected_list
 
-    # Trim leading/trailing whitespace from overall message
-    commit_msg=$(echo "$commit_msg" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+Create an entirely new message with different wording."
+    fi
 
-    if [[ -n "$commit_msg" ]]; then
-        break
+    while [ $attempt -le $max_attempts ]; do
+        if [[ "$VERBOSE" == "1" ]]; then echo "DEBUG: Attempt $attempt of $max_attempts (duplicate retry $duplicate_retry)"; fi
+
+        # Run the API call - BARE MINIMUM: no tools, no skills, no plugins, no chrome,
+        # no session persistence, NO USER SETTINGS, no project settings, no local settings
+        response=$(printf '%s\n\n%s' "$diff" "$user_prompt" \
+          | claude \
+          --model "$model" \
+          --system-prompt "$system_prompt" \
+          --setting-sources "" \
+          --tools "" \
+          --disable-slash-commands \
+          --no-chrome \
+          --no-session-persistence \
+          -p)
+
+        if [[ "$VERBOSE" == "1" ]]; then echo "DEBUG: Raw Response: $response"; fi
+
+        # PARSE JSON USING SED
+        # 1. tr -d '\n'     -> Remove newlines to handle multi-line JSON output
+        # 2. sed command    -> Capture text between "commit_message": " AND "
+        # 3. Convert \n escape sequences to actual newlines
+        commit_msg=$(echo "$response" | tr -d '\n' | sed -n 's/.*"commit_message"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+        commit_msg=$(printf '%b' "$commit_msg")
+
+        # Trim leading/trailing whitespace from overall message
+        commit_msg=$(echo "$commit_msg" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+
+        if [[ -n "$commit_msg" ]]; then
+            break
+        else
+            echo "⚠️  Received invalid JSON format. Retrying..."
+            user_prompt="The previous response was not valid JSON. Please output STRICT valid JSON only: {\"commit_message\": \"message_here\"}"
+            ((attempt++))
+        fi
+    done
+
+    if [[ -z "$commit_msg" ]]; then
+        echo "Error: Failed to extract commit message after $max_attempts attempts."
+        handle_error
+    fi
+
+    # Check subject line (first line) against recent commit subjects
+    commit_subject=$(echo "$commit_msg" | head -1)
+    recent_subjects=$(git log --format="%s" -50 2>/dev/null)
+    if echo "$recent_subjects" | grep -Fxq "$commit_subject"; then
+        echo "⚠️  Generated duplicate subject: '$commit_subject'. Retrying with explicit rejection..."
+        rejected_messages+=("$commit_subject")
+        ((duplicate_retry++))
+        commit_msg=""
     else
-        echo "⚠️  Received invalid JSON format. Retrying..."
-        prompt="The previous response was not valid JSON. Please output STRICT valid JSON only: {\"commit_message\": \"message_here\"}"
-        ((attempt++))
+        # Success - not a duplicate
+        break
     fi
 done
 
 # -------------------------------------------------------------------------
-# 5. VALIDATION & FINALIZATION
+# 5. FINAL VALIDATION
 # -------------------------------------------------------------------------
 
 if [[ -z "$commit_msg" ]]; then
-    echo "Error: Failed to extract commit message after $max_attempts attempts."
-    handle_error
-fi
-
-# Check subject line (first line) against recent commit subjects
-commit_subject=$(echo "$commit_msg" | head -1)
-recent_subjects=$(git log --format="%s" -20 2>/dev/null)
-if echo "$recent_subjects" | grep -Fxq "$commit_subject"; then
-    echo "Error: Generated subject line already exists in history: '$commit_subject'"
+    echo "Error: Failed to generate unique commit message after $max_duplicate_retries duplicate retries."
     handle_error
 fi
 
